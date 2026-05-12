@@ -290,9 +290,9 @@ The MVP is considered complete when:
 
 ### MVP
 
-* [ ] Clean up original voice-assistant files
-* [ ] Replace `config.json`
-* [ ] Replace `requirements.txt`
+* [x] Clean up original voice-assistant files
+* [x] Replace `config.json`
+* [x] Replace `requirements.txt`
 * [ ] Add video processing module
 * [ ] Add CLIP + Logistic Regression classifier
 * [ ] Add event detector

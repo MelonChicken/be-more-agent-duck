@@ -1,8 +1,10 @@
-sounddevice
+opencv-python
+torch
+torchvision
+git+https://github.com/openai/CLIP.git
+scikit-learn
 numpy
-scipy
-openwakeword
-onnxruntime
-ollama
-duckduckgo-search
+pandas
+tqdm
 Pillow
+joblib
