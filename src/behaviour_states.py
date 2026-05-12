@@ -1,6 +1,6 @@
 from enum import Enum
 
-
+DEFAULT_CONFIDENCE_THRESHOLD = 0.6
 class BehaviourClass(Enum):
     """
     Enum class for the behaviour state of target animal
@@ -33,5 +33,5 @@ BEHAVIOUR_MESSAGES: dict = {
     ]
 }
 
-print(BehaviourClass.RESTING.value)  # "resting"
-print(BEHAVIOUR_MESSAGES[BehaviourClass.FEEDING])  # ["냠냠...", ...]
+# print(BehaviourClass.RESTING.value)  # "resting"
+# print(BEHAVIOUR_MESSAGES[BehaviourClass.FEEDING])  # ["냠냠...", ...]
