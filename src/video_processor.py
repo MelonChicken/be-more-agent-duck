@@ -14,7 +14,7 @@ def load_video(video_path):
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    duration_sec = total_frames / fps
+    duration_sec = int(total_frames / fps)
     return cap, fps, total_frames, duration_sec
 
 def extract_segment_frames(cap, fps, start_sec, end_sec, n_frames):
@@ -33,12 +33,14 @@ def extract_segment_frames(cap, fps, start_sec, end_sec, n_frames):
     # 1) convert second to frames using fps
     start_frame = int(start_sec * fps)
     end_frame = int(end_sec * fps)
+    n_frames = int(n_frames)
+    # print(f"start_frame={start_frame}, end_frame={end_frame}, n_frames={n_frames}")
     # 2) get random n numbers which are in (start_frame, end_frame)
-    indices = np.linspace(start_frame, end_frame, n_frames, dtype=int)
+    indices = np.linspace(start_frame, end_frame, n_frames).astype(int).tolist()
 
     frames = []
     for idx in indices:
-
+        # print(f"current idx : {idx}")
         # read idx-th frame
         # first, move the video to target frame
         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
