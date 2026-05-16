@@ -2,7 +2,9 @@
 
 > Raspberry Pi-based lightweight embodied agent for duck behaviour observation.
 
-`be-more-agent-duck` is a fork-based refactoring project that changes the original offline voice assistant into a duck behaviour observation agent.
+[![Original Project](https://img.youtube.com/vi/l5ggH-YhuAw/maxresdefault.jpg)](https://youtu.be/l5ggH-YhuAw)
+
+`be-more-agent-duck` is a **fork-based** refactoring project that changes the original offline voice assistant into a duck behaviour observation agent.
 The system takes a duck video as input, splits it into short segments, classifies behaviour, reacts to behaviour changes, and saves a session report.
 
 ---
