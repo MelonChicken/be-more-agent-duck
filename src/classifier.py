@@ -9,8 +9,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
-from behaviour_states import BehaviourClass, DEFAULT_CONFIDENCE_THRESHOLD
-from video_processor import extract_segment_frames, load_video, iter_segments
+from src.behaviour_states import BehaviourClass, DEFAULT_CONFIDENCE_THRESHOLD
+from src.video_processor import extract_segment_frames, load_video, iter_segments
 
 # ──────────────────────────────────────────────
 # CLIP 모델 캐시
@@ -67,45 +67,24 @@ def frames_to_embedding(frames, model_name, batch_size=32):
 
 
 # ──────────────────────────────────────────────
-# 피처 매트릭스 빌드 (캐시 지원)
+# 피처 매트릭스 빌드 (다중 영상 + 캐시 지원)
 # ──────────────────────────────────────────────
-def build_feature_matrix(video_path, labels_csv, model_name, cache_path=None):
+def _extract_from_single_video(video_path, label_df, model_name):
     """
-    labels.csv → 프레임 추출 → CLIP 임베딩 → X, y 반환
-
-    변경점:
-    - cache_path 지정 시 첫 실행에 .npz 저장, 이후 실행은 캐시 로드 (2.5h → 수초)
-    - uncertain 라벨 제외
+    단일 영상 + 해당 라벨 DataFrame → (X, y) 추출 내부 함수
     """
-    # ── 캐시 확인 ──
-    if cache_path is not None:
-        cache_file = Path(cache_path)
-        if cache_file.exists():
-            print(f"[{datetime.now():%H:%M:%S}] [classifier] 캐시 로드: {cache_file}")
-            data = np.load(cache_file, allow_pickle=True)
-            X, y = data["X"], data["y"]
-            print(f"[{datetime.now():%H:%M:%S}] [classifier] 캐시에서 X={X.shape}, y={y.shape} 로드 완료")
-            return X, y
-
-    # ── CSV 로드 ──
-    label_df = pd.read_csv(labels_csv, index_col=False)
-    label_df = label_df[label_df["label"] != "uncertain"].reset_index(drop=True)
-
-    if label_df.empty:
-        raise ValueError("uncertain 제외 후 유효한 라벨 행이 없습니다.")
-
     cap, fps, total_frames, duration_sec = load_video(video_path)
-    print(f"[{datetime.now():%H:%M:%S}] fps: {fps}, total_frames: {total_frames}, duration_sec: {duration_sec}")
+    print(f"[{datetime.now():%H:%M:%S}] [classifier] 영상 로드: {video_path}")
+    print(f"[{datetime.now():%H:%M:%S}]   fps={fps}, duration={duration_sec}s, 구간={len(label_df)}개")
 
     X, y = [], []
     total = len(label_df)
 
     for idx, (_, row) in enumerate(label_df.iterrows()):
         start = int(row["start_sec"])
-        end   = int(row["end_sec"])
+        end = int(row["end_sec"])
         label = str(row["label"])
 
-        # 진행률 출력 (10구간마다)
         if idx % 10 == 0:
             print(f"[{datetime.now():%H:%M:%S}] [classifier] 진행: {idx}/{total} 구간")
 
@@ -123,11 +102,67 @@ def build_feature_matrix(video_path, labels_csv, model_name, cache_path=None):
             print(f"[{datetime.now():%H:%M:%S}] [classifier] 구간 {start}~{end}s 처리 실패: {e}")
             continue
 
-    if not X:
-        raise RuntimeError("임베딩 추출에 성공한 구간이 없습니다.")
+    cap.release()
+    return X, y
 
-    X = np.stack(X)   # (N, 512)
-    y = np.array(y)   # (N,)
+
+# ──────────────────────────────────────────────
+# 피처 매트릭스 빌드 (캐시 지원)
+# ──────────────────────────────────────────────
+def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None):
+    """
+    다중 영상 + 다중 labels.csv → CLIP 임베딩 → X, y 반환
+
+    Args:
+        video_paths : str 또는 list[str] — 영상 파일 경로
+        labels_csvs : str 또는 list[str] — 라벨 CSV 경로 (video_paths와 1:1 대응)
+        model_name  : CLIP 모델명
+        cache_path  : .npz 캐시 경로 (None이면 캐시 미사용)
+
+    단일 영상도 그대로 호환:
+        build_feature_matrix("duck.mp4", "labels.csv", "ViT-B/32")
+    """
+    # ── 단일 입력을 리스트로 통일 ──
+    if isinstance(video_paths, str):
+        video_paths = [video_paths]
+    if isinstance(labels_csvs, str):
+        labels_csvs = [labels_csvs]
+
+    if len(video_paths) != len(labels_csvs):
+        raise ValueError(f"video_paths({len(video_paths)})와 labels_csvs({len(labels_csvs)}) 길이가 다릅니다.")
+
+    # ── 캐시 확인 ──
+    if cache_path is not None:
+        cache_file = Path(cache_path)
+        if cache_file.exists():
+            print(f"[{datetime.now():%H:%M:%S}] [classifier] 캐시 로드: {cache_file}")
+            data = np.load(cache_file, allow_pickle=True)
+            X, y = data["X"], data["y"]
+            print(f"[{datetime.now():%H:%M:%S}] [classifier] 캐시에서 X={X.shape}, y={y.shape} 로드 완료")
+            return X, y
+
+    # ── 영상별 추출 후 합치기 ──
+    all_X, all_y = [], []
+
+    for vid_idx, (video_path, labels_csv) in enumerate(zip(video_paths, labels_csvs)):
+        print(f"[{datetime.now():%H:%M:%S}] [classifier] ── 영상 {vid_idx + 1}/{len(video_paths)}: {video_path}")
+
+        label_df = pd.read_csv(labels_csv, index_col=False)
+        label_df = label_df[label_df["label"] != "uncertain"].reset_index(drop=True)
+
+        if label_df.empty:
+            print(f"[{datetime.now():%H:%M:%S}] [classifier] 유효한 라벨 없음 → 건너뜀: {labels_csv}")
+            continue
+
+        X, y = _extract_from_single_video(video_path, label_df, model_name)
+        all_X.extend(X)
+        all_y.extend(y)
+
+    if not all_X:
+        raise RuntimeError("모든 영상에서 임베딩 추출에 성공한 구간이 없습니다.")
+
+    X = np.stack(all_X)  # (N, 512)
+    y = np.array(all_y)  # (N,)
 
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 피처 매트릭스 완성: X={X.shape}, y={y.shape}")
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 클래스 분포: { {c: int((y == c).sum()) for c in np.unique(y)} }")
@@ -171,7 +206,7 @@ def train_classifier(X, y, model_save_path, test_size=0.2, random_state=42):
     y_pred = clf.predict(X_test)
     print(f"\n[{datetime.now():%H:%M:%S}] [classifier] === Classification Report ===")
     print(classification_report(y_test, y_pred, target_names=label_encoder.classes_,
-                                zero_division=0))   # UndefinedMetricWarning 제거
+                                zero_division=0))  # UndefinedMetricWarning 제거
 
     payload = {"clf": clf, "le": label_encoder}
     joblib.dump(payload, model_save_path)
