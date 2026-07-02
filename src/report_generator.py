@@ -1,4 +1,5 @@
 from collections import Counter
+
 from src.behaviour_states import BehaviourClass
 
 
@@ -19,14 +20,16 @@ def generate_summary_text(timeline, total_sec):
     uncertain_ratio = round(uncertain_count / total_segments * 100)
 
     other_behaviours = [
-        b for b in behaviour_counts
-        if b != dominant and b != BehaviourClass.UNCERTAIN.value
+        behaviour
+        for behaviour in behaviour_counts
+        if behaviour != dominant and behaviour != BehaviourClass.UNCERTAIN.value
     ]
 
     if other_behaviours:
         other_text = ", ".join(f"'{behaviour}'" for behaviour in other_behaviours)
+        other_sentence = f"그 외 나온 행동은 {other_text}입니다."
     else:
-        other_text = "없습니다"
+        other_sentence = "그 외 나온 행동은 없습니다."
 
     warning_text = ""
     if uncertain_ratio > 20:
@@ -35,7 +38,7 @@ def generate_summary_text(timeline, total_sec):
     return (
         f"이번 세션에서 오리는 주로 '{dominant}' 상태였으며, "
         f"전체 구간의 약 {dominant_ratio}%를 차지했습니다. "
-        f"그 외 나온 행동은 {other_text}입니다. "
+        f"{other_sentence} "
         f"uncertain 비율은 약 {uncertain_ratio}%입니다.{warning_text}"
     )
 
