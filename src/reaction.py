@@ -9,8 +9,6 @@ BEHAVIOUR_FACE_MAP = {
     BehaviourClass.UNCERTAIN: "faces/warmup",
 }
 
-SOUNDS_DIR = os.path.join(os.path.dirname(__file__), "..", "sounds")
-
 def get_face_images(behaviour):
     folder_path = BEHAVIOUR_FACE_MAP.get(behaviour, "faces/idle")
     image_paths = _get_png_paths(folder_path)
@@ -26,12 +24,13 @@ def get_reaction_message(behaviour):
     return random.choice(messages)
 
 
-def get_uncertain_sound():
+def get_uncertain_sound(sound_dir):
+    if not os.path.isdir(sound_dir):
+        return None
 
-    THINKING_SOUNDS_DIR = os.path.join(SOUNDS_DIR, "thinking_sounds")
     wav_paths = sorted(
-        os.path.join(THINKING_SOUNDS_DIR, filename)
-        for filename in os.listdir(THINKING_SOUNDS_DIR)
+        os.path.join(sound_dir, filename)
+        for filename in os.listdir(sound_dir)
         if filename.lower().endswith(".wav")
     )
     if not wav_paths:

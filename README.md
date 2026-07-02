@@ -219,6 +219,9 @@ Example `config.json`:
 }
 ```
 
+When `config.json` exists, runtime paths and parameters are controlled from that file.
+Code-level defaults are only a fallback for a missing config file.
+
 ---
 
 ## Installation
@@ -292,13 +295,15 @@ The `notebooks/auto_label.py` script can be used as a helper during dataset prep
 
 ## Running the Agent
 
-After the classifier is trained and `agent.py` is integrated with the `src/` pipeline:
+After the classifier is trained, run the headless pipeline:
 
 ```bash
-python agent.py
+python agent.py --headless
 ```
 
-The GUI will start the video-based behaviour observation pipeline.
+This processes the configured video, prints the summary, and saves CSV/JSON outputs.
+The GUI path will use the same `DuckAgent.run(on_segment=...)` callback contract once
+`DuckGUI` is implemented.
 At session end, results are saved to the `sessions/` directory.
 
 ---
@@ -332,7 +337,7 @@ The MVP is considered complete when:
 * [x] Add reaction logic
 * [x] Add session logger
 * [x] Add report generator
-* [ ] Integrate modules in `agent.py`
+* [x] Integrate modules in `agent.py`
 * [ ] Refactor GUI into `DuckGUI`
 * [ ] Run end-to-end test with multi-video training data
 

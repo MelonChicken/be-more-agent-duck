@@ -32,3 +32,15 @@ def save_session(timeline, report, base_dir="sessions"):
     save_session_csv(timeline, session_dir)
     save_session_json(report, session_dir)
     return session_dir
+
+
+class SessionLogger:
+    def __init__(self, base_dir="sessions"):
+        self.base_dir = base_dir
+        self.timeline = []
+
+    def record_segment(self, segment):
+        self.timeline.append(segment)
+
+    def save(self, report, timeline=None):
+        return save_session(timeline or self.timeline, report, self.base_dir)
