@@ -225,7 +225,34 @@ def load_classifier(model_path):
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 클래스: {list(le.classes_)}")
     return clf, le
 
+def load_or_train_classifier(model_path, config):
+    """모델 있으면 로드, 없으면 data/train에서 자동 학습"""
+    if Path(model_path).exists():
+        return load_classifier(model_path)
 
+    print(f"[{datetime.now():%H:%M:%S}] [classifier] 모델 없음 → 자동 학습 시작")
+
+    train_dir = Path("data/train")
+    video_paths = sorted(str(p) for p in train_dir.glob("*.mp4"))
+    labels_csvs = [
+        str(train_dir / f"labels_{Path(v).stem}.csv")
+        for v in video_paths
+    ]
+
+    # 라벨 CSV 존재 검증
+    missing = [c for c in labels_csvs if not Path(c).exists()]
+    if not video_paths:
+        raise FileNotFoundError(f"data/train에 학습용 mp4가 없습니다.")
+    if missing:
+        raise FileNotFoundError(f"라벨 CSV 누락: {missing}")
+
+    X, y = build_feature_matrix(
+        video_paths, labels_csvs,
+        config["clip_model"],
+        cache_path=None,          # ← 자동 학습은 캐시 안 씀 (안전)
+        frames_per_seg=config["frames_per_seg"],
+    )
+    return train_classifier(X, y, model_path)
 # ──────────────────────────────────────────────
 # 세그먼트 예측
 # ──────────────────────────────────────────────
