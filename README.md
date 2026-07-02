@@ -103,63 +103,82 @@ At the end of a session, the system generates:
 * `session.json`
 
 The output is saved under the `sessions/` directory.
+`EventDetector.get_top_events(5)` is responsible for selecting transition events.
+`generate_report()` receives those selected events and writes them into the report.
 
 ---
 
 ## Project Structure
 
-Planned target structure:
+Current target structure:
 
 ```text
 be-more-agent-duck/
-│
-├── agent.py                   # Entry point
-├── config.json                # Runtime parameters
-├── requirements.txt           # Python dependencies
-├── setup.sh                   # Setup script
-├── README.md                  # Project documentation
-│
-├── behaviour_states.py        # Behaviour class enum and messages
-├── video_processor.py         # Video loading and frame sampling
-├── classifier.py              # CLIP embedding and Logistic Regression
-├── event_detector.py          # Behaviour transition detection
-├── reaction.py                # Character face/message/sound reaction logic
-├── report_generator.py        # Session report generation
-├── session_logger.py          # CSV / JSON session saving
-├── gui.py                     # DuckGUI interface
-│
-├── faces/
-│   ├── resting/
-│   ├── feeding/
-│   ├── exploring/
-│   ├── uncertain/
-│   ├── idle/
-│   └── error/
-│
-├── sounds/
-│   └── uncertain_sounds/
-│
-├── data/
-│   ├── labels.csv
-│   └── clips/
-│
-├── sessions/
-│   └── YYYY-MM-DD_HH-MM-SS/
-│       ├── session.csv
-│       └── session.json
-│
-├── models/
-│   └── duck_classifier.pkl
-│
-└── notebooks/
-    └── baseline.ipynb
+|
+|-- agent.py                   # Entry point, currently being refactored
+|-- config.json                # Runtime parameters
+|-- requirements.txt           # Python dependencies
+|-- setup.sh                   # Setup script
+|-- README.md                  # Project documentation
+|
+|-- src/
+|   |-- behaviour_states.py    # Behaviour class enum and messages
+|   |-- video_processor.py     # Video loading and frame sampling
+|   |-- classifier.py          # CLIP embedding and Logistic Regression
+|   |-- event_detector.py      # Behaviour transition detection
+|   |-- reaction.py            # Character face/message/sound reaction logic
+|   |-- report_generator.py    # Session report generation
+|   |-- session_logger.py      # CSV / JSON session saving
+|   `-- __init__.py
+|
+|-- gui.py                     # DuckGUI placeholder
+|
+|-- faces/
+|   |-- capturing/
+|   |-- error/
+|   |-- idle/
+|   |-- listening/
+|   |-- speaking/
+|   |-- thinking/
+|   `-- warmup/
+|
+|-- sounds/
+|   |-- ack_sounds/
+|   |-- greeting_sounds/
+|   `-- thinking_sounds/       # Used for uncertain feedback
+|
+|-- data/
+|   |-- duck1.mp4
+|   |-- duck2.mp4
+|   |-- labels_duck1.csv
+|   `-- labels_duck2.csv
+|
+|-- sessions/
+|   `-- YYYY-MM-DD_HH-MM-SS/
+|       |-- session.csv
+|       `-- session.json
+|
+|-- models/
+|   `-- classifier.joblib
+|
+`-- notebooks/
+    `-- auto_label.py
 ```
+
+The `faces/` folders are BMO expression states, not one folder per duck behaviour.
+`src/reaction.py` maps duck behaviours to these expression folders.
 
 ---
 
 ## Dataset and Label Format
 
-Training data is managed with `data/labels.csv`.
+Training data can be combined from multiple videos and matching label CSV files.
+The current local dataset uses:
+
+```text
+data/duck1.mp4          + data/labels_duck1.csv
+data/duck2.mp4          + data/labels_duck2.csv
+```
 
 Example:
 
@@ -187,16 +206,16 @@ Example `config.json`:
 
 ```json
 {
-  "video_path": "data/duck.mp4",
+  "video_path": "data/duck1.mp4",
   "segment_sec": 5,
   "frames_per_seg": 10,
   "confidence_threshold": 0.6,
   "smoothing_window": 3,
   "max_uncertain_streak": 3,
   "output_dir": "sessions",
-  "model_path": "models/duck_classifier.pkl",
+  "model_path": "models/classifier.joblib",
   "clip_model": "ViT-B/32",
-  "uncertain_sound_dir": "sounds/uncertain_sounds"
+  "uncertain_sound_dir": "sounds/thinking_sounds"
 }
 ```
 
@@ -228,47 +247,58 @@ pip install -r requirements.txt
 
 ### 4. Prepare data
 
-Place a duck video file at:
+Place duck video files under `data/`, for example:
 
 ```text
-data/duck.mp4
+data/duck1.mp4
+data/duck2.mp4
 ```
 
-Then create or edit:
+Then create or edit matching label CSV files:
 
 ```text
-data/labels.csv
+data/labels_duck1.csv
+data/labels_duck2.csv
 ```
 
 ---
 
 ## Training Baseline Model
 
-The initial training workflow is expected to be run in:
+The current training helper supports multiple video/label pairs:
 
-```text
-notebooks/baseline.ipynb
+```python
+from src.classifier import build_feature_matrix, train_classifier
+
+X, y = build_feature_matrix(
+    ["data/duck1.mp4", "data/duck2.mp4"],
+    ["data/labels_duck1.csv", "data/labels_duck2.csv"],
+    "ViT-B/32",
+    frames_per_seg=10,
+)
+clf, label_encoder = train_classifier(X, y, "models/classifier.joblib")
 ```
 
-The notebook should:
+The training path and inference path both sample 10 frames per 5-second segment.
+This keeps CLIP embedding extraction fast and avoids train/inference sampling skew.
 
-1. load `config.json`
-2. read `data/labels.csv`
-3. extract CLIP embeddings from labeled segments
-4. train Logistic Regression
-5. save the model to `models/duck_classifier.pkl`
+If `build_feature_matrix(..., cache_path=...)` is used, delete and regenerate the `.npz`
+cache whenever `frames_per_seg` or sampling logic changes. A cache generated from a
+different frame count is not valid for the current 10-frame baseline.
+
+The `notebooks/auto_label.py` script can be used as a helper during dataset preparation.
 
 ---
 
 ## Running the Agent
 
-After the classifier is trained:
+After the classifier is trained and `agent.py` is integrated with the `src/` pipeline:
 
 ```bash
 python agent.py
 ```
 
-The GUI starts the video-based behaviour observation pipeline.
+The GUI will start the video-based behaviour observation pipeline.
 At session end, results are saved to the `sessions/` directory.
 
 ---
@@ -295,14 +325,16 @@ The MVP is considered complete when:
 * [x] Clean up original voice-assistant files
 * [x] Replace `config.json`
 * [x] Replace `requirements.txt`
-* [ ] Add video processing module
-* [ ] Add CLIP + Logistic Regression classifier
-* [ ] Add event detector
-* [ ] Add reaction logic
-* [ ] Add session logger
-* [ ] Add report generator
+* [x] Add video processing module
+* [x] Add CLIP + Logistic Regression classifier
+* [x] Use 10-frame sampling for training embeddings
+* [x] Add event detector
+* [x] Add reaction logic
+* [x] Add session logger
+* [x] Add report generator
+* [ ] Integrate modules in `agent.py`
 * [ ] Refactor GUI into `DuckGUI`
-* [ ] Run end-to-end test with one duck video
+* [ ] Run end-to-end test with multi-video training data
 
 ### After MVP
 
