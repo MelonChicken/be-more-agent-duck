@@ -69,7 +69,7 @@ def frames_to_embedding(frames, model_name, batch_size=32):
 # ──────────────────────────────────────────────
 # 피처 매트릭스 빌드 (다중 영상 + 캐시 지원)
 # ──────────────────────────────────────────────
-def _extract_from_single_video(video_path, label_df, model_name):
+def _extract_from_single_video(video_path, label_df, model_name, frames_per_seg=10):
     """
     단일 영상 + 해당 라벨 DataFrame → (X, y) 추출 내부 함수
     """
@@ -89,7 +89,7 @@ def _extract_from_single_video(video_path, label_df, model_name):
             print(f"[{datetime.now():%H:%M:%S}] [classifier] 진행: {idx}/{total} 구간")
 
         try:
-            frames = extract_segment_frames(cap, fps, start, end, (end - start) * fps)
+            frames = extract_segment_frames(cap, fps, start, end, frames_per_seg)
             if not frames:
                 print(f"[{datetime.now():%H:%M:%S}] [classifier] 프레임 없음 → {start}~{end}s 건너뜀")
                 continue
@@ -109,7 +109,7 @@ def _extract_from_single_video(video_path, label_df, model_name):
 # ──────────────────────────────────────────────
 # 피처 매트릭스 빌드 (캐시 지원)
 # ──────────────────────────────────────────────
-def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None):
+def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, frames_per_seg=10):
     """
     다중 영상 + 다중 labels.csv → CLIP 임베딩 → X, y 반환
 
@@ -120,7 +120,7 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None):
         cache_path  : .npz 캐시 경로 (None이면 캐시 미사용)
 
     단일 영상도 그대로 호환:
-        build_feature_matrix("duck.mp4", "labels.csv", "ViT-B/32")
+        build_feature_matrix(["data/duck1.mp4"], ["data/labels_duck1.csv"], "ViT-B/32", frames_per_seg=10)
     """
     # ── 단일 입력을 리스트로 통일 ──
     if isinstance(video_paths, str):
@@ -154,7 +154,7 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None):
             print(f"[{datetime.now():%H:%M:%S}] [classifier] 유효한 라벨 없음 → 건너뜀: {labels_csv}")
             continue
 
-        X, y = _extract_from_single_video(video_path, label_df, model_name)
+        X, y = _extract_from_single_video(video_path, label_df, model_name, frames_per_seg)
         all_X.extend(X)
         all_y.extend(y)
 
