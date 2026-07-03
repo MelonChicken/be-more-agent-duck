@@ -38,7 +38,7 @@ def get_clip_model(model_name):
 # ──────────────────────────────────────────────
 # 임베딩 추출 (배치 처리)
 # ──────────────────────────────────────────────
-def frames_to_embedding(frames, model_name, batch_size=32):
+def frames_to_embedding(frames, model_name, batch_size=32, include_std=False):
     """
     PIL Image 리스트 → CLIP 배치 추출 → L2 정규화 → 평균 벡터 반환 (shape: 512,)
 
@@ -61,15 +61,21 @@ def frames_to_embedding(frames, model_name, batch_size=32):
             embeddings.append(emb)
 
     stacked = torch.cat(embeddings, dim=0)           # (N, 512)
-    mean_emb = stacked.mean(dim=0)                   # (512,)
+    mean_emb = stacked.mean(dim=0)
     mean_emb = torch.nn.functional.normalize(mean_emb, dim=-1)
-    return mean_emb.cpu().numpy()
+
+    if not include_std:
+        return mean_emb.cpu().numpy()        # 기존 동작 그대로
+
+    std_emb = stacked.std(dim=0)             # L2 정규화 안 함 (움직임 신호)
+    feature = torch.cat([mean_emb, std_emb], dim=0)  # (1024,)
+    return feature.cpu().numpy()
 
 
 # ──────────────────────────────────────────────
 # 피처 매트릭스 빌드 (다중 영상 + 캐시 지원)
 # ──────────────────────────────────────────────
-def _extract_from_single_video(video_path, label_df, model_name, frames_per_seg=10):
+def _extract_from_single_video(video_path, label_df, model_name, frames_per_seg=10, include_std=False):
     """
     단일 영상 + 해당 라벨 DataFrame → (X, y) 추출 내부 함수
     """
@@ -94,7 +100,7 @@ def _extract_from_single_video(video_path, label_df, model_name, frames_per_seg=
                 print(f"[{datetime.now():%H:%M:%S}] [classifier] 프레임 없음 → {start}~{end}s 건너뜀")
                 continue
 
-            embedding = frames_to_embedding(frames, model_name=model_name)
+            embedding = frames_to_embedding(frames, model_name=model_name, include_std=include_std)
             X.append(embedding)
             y.append(label)
 
@@ -109,7 +115,7 @@ def _extract_from_single_video(video_path, label_df, model_name, frames_per_seg=
 # ──────────────────────────────────────────────
 # 피처 매트릭스 빌드 (캐시 지원)
 # ──────────────────────────────────────────────
-def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, frames_per_seg=10):
+def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, frames_per_seg=10, include_std=False):
     """
     다중 영상 + 다중 labels.csv → CLIP 임베딩 → X, y 반환
 
@@ -154,7 +160,7 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, 
             print(f"[{datetime.now():%H:%M:%S}] [classifier] 유효한 라벨 없음 → 건너뜀: {labels_csv}")
             continue
 
-        X, y = _extract_from_single_video(video_path, label_df, model_name, frames_per_seg)
+        X, y = _extract_from_single_video(video_path, label_df, model_name, frames_per_seg, include_std)
         all_X.extend(X)
         all_y.extend(y)
 
