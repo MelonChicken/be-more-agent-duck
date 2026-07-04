@@ -12,7 +12,7 @@ from src.video_processor import iter_segments, load_video
 
 
 DEFAULT_CONFIG = {
-    "video_path": "data/duck1.mp4",
+    "video_path": "data/test/duck1.mp4",
     "segment_sec": 5,
     "playback_speed": 8,
     "frames_per_seg": 10,
@@ -23,6 +23,10 @@ DEFAULT_CONFIG = {
     "model_path": "models/classifier.joblib",
     "clip_model": "ViT-B/32",
     "uncertain_sound_dir": "sounds/thinking_sounds",
+    "train_labels_dir": "data/wetlandbirds",
+    "train_boxes_csv": "data/wetlandbirds/duck_segment_boxes.csv",
+    "train_videos_dir": "data/wetlandbirds/videos",
+    "test_labels": ["data/labels_duck1.csv", "data/labels_duck2.csv"],
 }
 
 

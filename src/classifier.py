@@ -10,7 +10,13 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 from src.behaviour_states import BehaviourClass, DEFAULT_CONFIDENCE_THRESHOLD
-from src.video_processor import extract_segment_frames, load_video, iter_segments
+from src.video_processor import (
+    _read_segment_boxes,
+    extract_segment_frames,
+    iter_segments,
+    iter_segments_from_boxes,
+    load_video,
+)
 
 # ──────────────────────────────────────────────
 # CLIP 모델 캐시
@@ -115,7 +121,44 @@ def _extract_from_single_video(video_path, label_df, model_name, frames_per_seg=
 # ──────────────────────────────────────────────
 # 피처 매트릭스 빌드 (캐시 지원)
 # ──────────────────────────────────────────────
-def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, frames_per_seg=10, include_std=False):
+def _extract_from_single_video_boxes(video_path, video_name, label_df, boxes_table, model_name, include_std=False):
+    """
+    WetlandBirds duck subset: adapter가 고른 frame/box를 그대로 crop해서 (X, y) 추출.
+    """
+    label_df = label_df[label_df["label"] != "uncertain"].reset_index(drop=True)
+    labels_by_segment = {
+        int(row["segment_id"]): str(row["label"])
+        for _, row in label_df.iterrows()
+    }
+
+    print(f"[{datetime.now():%H:%M:%S}] [classifier] crop 학습 영상 로드: {video_path}")
+    print(f"[{datetime.now():%H:%M:%S}]   video_name={video_name}, labels={len(labels_by_segment)}개")
+
+    X, y = [], []
+    total = len(labels_by_segment)
+
+    for idx, (segment_id, start_sec, frames) in enumerate(
+        iter_segments_from_boxes(video_path, video_name, boxes_table)
+    ):
+        if segment_id not in labels_by_segment:
+            continue
+
+        if idx % 10 == 0:
+            print(f"[{datetime.now():%H:%M:%S}] [classifier] crop 진행: {idx}/{total} 구간")
+
+        try:
+            embedding = frames_to_embedding(frames, model_name=model_name, include_std=include_std)
+            X.append(embedding)
+            y.append(labels_by_segment[segment_id])
+
+        except Exception as e:
+            print(f"[{datetime.now():%H:%M:%S}] [classifier] crop 구간 {segment_id} ({start_sec:.3f}s) 처리 실패: {e}")
+            continue
+
+    return X, y
+
+
+def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, frames_per_seg=10, include_std=False, boxes_csv=None):
     """
     다중 영상 + 다중 labels.csv → CLIP 임베딩 → X, y 반환
 
@@ -148,6 +191,7 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, 
             return X, y
 
     # ── 영상별 추출 후 합치기 ──
+    boxes_table = _read_segment_boxes(boxes_csv) if boxes_csv is not None else None
     all_X, all_y = [], []
 
     for vid_idx, (video_path, labels_csv) in enumerate(zip(video_paths, labels_csvs)):
@@ -160,7 +204,17 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, 
             print(f"[{datetime.now():%H:%M:%S}] [classifier] 유효한 라벨 없음 → 건너뜀: {labels_csv}")
             continue
 
-        X, y = _extract_from_single_video(video_path, label_df, model_name, frames_per_seg, include_std)
+        if boxes_table is None:
+            X, y = _extract_from_single_video(video_path, label_df, model_name, frames_per_seg, include_std)
+        else:
+            X, y = _extract_from_single_video_boxes(
+                video_path,
+                Path(video_path).stem,
+                label_df,
+                boxes_table,
+                model_name,
+                include_std,
+            )
         all_X.extend(X)
         all_y.extend(y)
 
@@ -169,6 +223,8 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, 
 
     X = np.stack(all_X)  # (N, 512)
     y = np.array(all_y)  # (N,)
+    class_counts = {c: int((y == c).sum()) for c in np.unique(y)}
+    print(f"[{datetime.now():%H:%M:%S}] [classifier] 학습셋 클래스별 최종 구간 수: {class_counts}")
 
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 피처 매트릭스 완성: X={X.shape}, y={y.shape}")
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 클래스 분포: { {c: int((y == c).sum()) for c in np.unique(y)} }")
@@ -230,33 +286,46 @@ def load_classifier(model_path):
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 모델 로드 완료: {model_path}")
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 클래스: {list(le.classes_)}")
     return clf, le
-
 def load_or_train_classifier(model_path, config):
-    """모델 있으면 로드, 없으면 data/train에서 자동 학습"""
+    """모델 있으면 로드, 없으면 어댑터가 만든 라벨 파일 기준으로 자동 학습"""
     if Path(model_path).exists():
         return load_classifier(model_path)
 
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 모델 없음 → 자동 학습 시작")
 
-    train_dir = Path("data/train")
-    video_paths = sorted(str(p) for p in train_dir.glob("*.mp4"))
-    labels_csvs = [
-        str(train_dir / f"labels_{Path(v).stem}.csv")
-        for v in video_paths
-    ]
+    train_dir = Path(config.get("train_videos_dir", "data/train"))
+    labels_dir = Path(config.get("train_labels_dir", str(train_dir)))
 
-    # 라벨 CSV 존재 검증
-    missing = [c for c in labels_csvs if not Path(c).exists()]
+    # ── 라벨 파일을 학습셋의 기준으로 삼는다 (어댑터가 만든 duck subset만) ──
+    label_files = sorted(labels_dir.glob("labels_*.csv"))
+    if not label_files:
+        raise FileNotFoundError(
+            f"학습 라벨 CSV가 없습니다: {labels_dir} — 어댑터를 먼저 실행하세요."
+        )
+
+    video_paths, labels_csvs, missing_videos = [], [], []
+    for lc in label_files:
+        stem = lc.stem[len("labels_"):]          # labels_043-mallard → 043-mallard
+        vpath = train_dir / f"{stem}.mp4"
+        if vpath.exists():
+            video_paths.append(str(vpath))
+            labels_csvs.append(str(lc))
+        else:
+            missing_videos.append(str(vpath))
+
+    if missing_videos:
+        print(f"[{datetime.now():%H:%M:%S}] [classifier] 경고: 라벨은 있으나 영상 없음 → 제외: {missing_videos}")
     if not video_paths:
-        raise FileNotFoundError(f"data/train에 학습용 mp4가 없습니다.")
-    if missing:
-        raise FileNotFoundError(f"라벨 CSV 누락: {missing}")
+        raise FileNotFoundError("라벨에 대응하는 학습 영상 mp4가 하나도 없습니다.")
+
+    print(f"[{datetime.now():%H:%M:%S}] [classifier] 학습 대상 영상 {len(video_paths)}개")
 
     X, y = build_feature_matrix(
         video_paths, labels_csvs,
         config["clip_model"],
-        cache_path=None,          # ← 자동 학습은 캐시 안 씀 (안전)
+        cache_path=None,          # crop feature → 캐시 미사용
         frames_per_seg=config["frames_per_seg"],
+        boxes_csv=config.get("train_boxes_csv"),
     )
     return train_classifier(X, y, model_path)
 # ──────────────────────────────────────────────
@@ -277,6 +346,7 @@ def predict_segment(frames, clf, le, confidence_threshold, clip_model):
         max_confidence = float(proba.max())
         predicted_idx  = int(proba.argmax())
 
+        print(f"proba={dict(zip(le.classes_, proba.round(3)))}, max={proba.max():.3f}")
         if max_confidence < confidence_threshold:
             return BehaviourClass.UNCERTAIN, max_confidence
 

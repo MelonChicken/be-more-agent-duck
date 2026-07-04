@@ -1,5 +1,8 @@
 import cv2
+import csv
 import numpy as np
+import os
+from collections import defaultdict
 from PIL import Image
 
 def load_video(video_path):
@@ -81,3 +84,54 @@ def iter_segments(video_path, segment_sec, frames_per_seg):
 
 # for seg_id, start_sec, frames in iter_segments("../data/duck.mp4", 5, 10):
 #     print(seg_id, start_sec, len(frames))
+
+def _read_segment_boxes(boxes_csv):
+    """duck_segment_boxes.csv -> {(video_name, segment_id): [(frame,x_min,y_min,x_max,y_max),...]}"""
+    table = defaultdict(list)
+    with open(boxes_csv, newline="") as f:
+        for row in csv.DictReader(f):
+            key = (row["video_name"], int(row["segment_id"]))
+            table[key].append((int(row["frame"]),
+                               float(row["x_min"]), float(row["y_min"]),
+                               float(row["x_max"]), float(row["y_max"])))
+    for k in table:
+        table[k].sort(key=lambda r: r[0])
+    return table
+
+def _crop_frame(cap, frame_idx, box, pad=0.10, min_size=32):
+    """frame_idx를 box로 crop -> PIL RGB. 실패/과소 시 None."""
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    if not ret:
+        return None
+    h, w = frame.shape[:2]
+    x_min, y_min, x_max, y_max = box
+    bw, bh = x_max - x_min, y_max - y_min
+    x_min -= bw * pad; x_max += bw * pad
+    y_min -= bh * pad; y_max += bh * pad
+    x_min = max(0, int(x_min)); y_min = max(0, int(y_min))
+    x_max = min(w, int(x_max)); y_max = min(h, int(y_max))
+    if x_max - x_min < min_size or y_max - y_min < min_size:
+        return None
+    crop = cv2.cvtColor(frame[y_min:y_max, x_min:x_max], cv2.COLOR_BGR2RGB)
+    return Image.fromarray(crop)
+
+def iter_segments_from_boxes(video_path, video_name, boxes_table):
+    """학습셋용: companion 프레임/박스로 crop. iter_segments와 동일 시그니처.
+       (segment_id, start_sec, frames[PIL]) yield."""
+    cap, fps, _, _ = load_video(video_path)
+    seg_ids = sorted({sid for (vn, sid) in boxes_table if vn == video_name})
+    try:
+        for segment_id in seg_ids:
+            rows = boxes_table[(video_name, segment_id)]
+            frames = []
+            for frame_idx, *box in rows:
+                pil = _crop_frame(cap, frame_idx, box)
+                if pil is not None:
+                    frames.append(pil)
+            if not frames:
+                continue
+            start_sec = rows[0][0] / fps
+            yield segment_id, start_sec, frames
+    finally:
+        cap.release()

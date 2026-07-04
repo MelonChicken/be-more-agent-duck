@@ -1,3 +1,4 @@
+ollama
 opencv-python
 torch
 torchvision
