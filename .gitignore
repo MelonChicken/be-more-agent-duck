@@ -42,3 +42,4 @@ test_audio.wav
 .DS_Store
 Thumbs.db
 ehthumbs.db
+/data/

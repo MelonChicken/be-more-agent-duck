@@ -9,3 +9,4 @@ pandas
 tqdm
 Pillow
 joblib
+ultralytics

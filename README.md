@@ -64,6 +64,7 @@ Default parameters:
 | Parameter              | Default | Meaning                                                            |
 | ---------------------- | ------: | ------------------------------------------------------------------ |
 | `segment_sec`          |     `5` | Segment length in seconds                                          |
+| `playback_speed`       |     `8` | GUI replay speed multiplier (`1` means real-time segment playback) |
 | `frames_per_seg`       |    `10` | Number of sampled frames per segment                               |
 | `confidence_threshold` |   `0.6` | If confidence is lower than this, classify as `uncertain`          |
 | `smoothing_window`     |     `3` | Number of stable segments required before detecting transition     |
@@ -131,7 +132,7 @@ be-more-agent-duck/
 |   |-- session_logger.py      # CSV / JSON session saving
 |   `-- __init__.py
 |
-|-- gui.py                     # DuckGUI placeholder
+|-- gui.py                     # DuckGUI interface
 |
 |-- faces/
 |   |-- capturing/
@@ -208,6 +209,7 @@ Example `config.json`:
 {
   "video_path": "data/duck1.mp4",
   "segment_sec": 5,
+  "playback_speed": 8,
   "frames_per_seg": 10,
   "confidence_threshold": 0.6,
   "smoothing_window": 3,
@@ -279,7 +281,7 @@ X, y = build_feature_matrix(
     "ViT-B/32",
     frames_per_seg=10,
 )
-clf, label_encoder = train_classifier(X, y, "models/classifier.joblib")
+clf, label_encoder = train_classifier(X, y, "models/archived/classifier.joblib")
 ```
 
 The training path and inference path both sample 10 frames per 5-second segment.
@@ -302,8 +304,8 @@ python agent.py --headless
 ```
 
 This processes the configured video, prints the summary, and saves CSV/JSON outputs.
-The GUI path will use the same `DuckAgent.run(on_segment=...)` callback contract once
-`DuckGUI` is implemented.
+Without `--headless`, `DuckGUI` analyzes the video first and then replays the collected
+segment results through the same `DuckAgent.run(on_segment=...)` callback contract.
 At session end, results are saved to the `sessions/` directory.
 
 ---
@@ -338,7 +340,7 @@ The MVP is considered complete when:
 * [x] Add session logger
 * [x] Add report generator
 * [x] Integrate modules in `agent.py`
-* [ ] Refactor GUI into `DuckGUI`
+* [x] Refactor GUI into `DuckGUI`
 * [ ] Run end-to-end test with multi-video training data
 
 ### After MVP

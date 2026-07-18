@@ -1,9 +1,10 @@
 import argparse
 import json
 import os
+from collections import deque
 
 from src.behaviour_states import BehaviourClass, DEFAULT_CONFIDENCE_THRESHOLD
-from src.classifier import get_clip_model, load_classifier, predict_segment, load_or_train_classifier
+from src.classifier import get_clip_model, predict_segment_proba, load_or_train_classifier
 from src.event_detector import EventDetector
 from src.reaction import get_face_images, get_reaction_message, get_uncertain_sound
 from src.report_generator import generate_report
@@ -17,6 +18,8 @@ DEFAULT_CONFIG = {
     "playback_speed": 8,
     "frames_per_seg": 10,
     "confidence_threshold": DEFAULT_CONFIDENCE_THRESHOLD,
+    "confidence_margin_threshold": 0.15,
+    "prediction_smoothing_window": 3,
     "smoothing_window": 3,
     "max_uncertain_streak": 3,
     "output_dir": "sessions",
@@ -48,19 +51,39 @@ class DuckAgent:
         )
         self.session_logger = SessionLogger(config["output_dir"])
         self.clip_model = config["clip_model"]
+        self.confidence_threshold = config.get("confidence_threshold", DEFAULT_CONFIDENCE_THRESHOLD)
+        self.confidence_margin_threshold = config.get("confidence_margin_threshold", 0.15)
+        self.prediction_smoothing_window = max(1, int(config.get("prediction_smoothing_window", 1)))
+        self._proba_history = deque(maxlen=self.prediction_smoothing_window)
+        self._none_streak = 0
         get_clip_model(self.clip_model)
 
     def analyze_segment(self, frames):
-        behaviour, confidence = predict_segment(
+        proba = predict_segment_proba(
             frames,
             self.classifier,
             self.label_encoder,
-            self.config["confidence_threshold"],
             self.clip_model,
         )
-        if confidence < self.config["confidence_threshold"]:
+        if proba is None:
+            self._none_streak += 1
+            if self._none_streak >= self.prediction_smoothing_window:
+                self._proba_history.clear()
+            return BehaviourClass.UNCERTAIN, 0.0
+
+        self._none_streak = 0
+        self._proba_history.append(proba)
+        smoothed_proba = sum(self._proba_history) / len(self._proba_history)
+        sorted_proba = sorted(smoothed_proba, reverse=True)
+        confidence = float(sorted_proba[0])
+        margin = float(sorted_proba[0] - sorted_proba[1]) if len(sorted_proba) > 1 else confidence
+
+        if confidence < self.confidence_threshold and margin < self.confidence_margin_threshold:
             return BehaviourClass.UNCERTAIN, confidence
-        return behaviour, confidence
+
+        predicted_idx = int(smoothed_proba.argmax())
+        label_str = self.label_encoder.inverse_transform([predicted_idx])[0]
+        return BehaviourClass(label_str), confidence
 
     def run(self, on_segment=None):
         timeline = []

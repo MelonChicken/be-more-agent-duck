@@ -5,6 +5,8 @@ import os
 from collections import defaultdict
 from PIL import Image
 
+from src.detector import detect_bird_box
+
 def load_video(video_path):
     """
     - open video file using cv2.VideoCapture
@@ -116,6 +118,20 @@ def _crop_frame(cap, frame_idx, box, pad=0.10, min_size=32):
     crop = cv2.cvtColor(frame[y_min:y_max, x_min:x_max], cv2.COLOR_BGR2RGB)
     return Image.fromarray(crop)
 
+def _crop_frame_arr(frame_bgr, box, pad=0.10, min_size=32):
+    """Already-read BGR frame -> box crop -> PIL RGB. Returns None if invalid/tiny."""
+    h, w = frame_bgr.shape[:2]
+    x_min, y_min, x_max, y_max = box
+    bw, bh = x_max - x_min, y_max - y_min
+    x_min -= bw * pad; x_max += bw * pad
+    y_min -= bh * pad; y_max += bh * pad
+    x_min = max(0, int(x_min)); y_min = max(0, int(y_min))
+    x_max = min(w, int(x_max)); y_max = min(h, int(y_max))
+    if x_max - x_min < min_size or y_max - y_min < min_size:
+        return None
+    crop = cv2.cvtColor(frame_bgr[y_min:y_max, x_min:x_max], cv2.COLOR_BGR2RGB)
+    return Image.fromarray(crop)
+
 def iter_segments_from_boxes(video_path, video_name, boxes_table):
     """학습셋용: companion 프레임/박스로 crop. iter_segments와 동일 시그니처.
        (segment_id, start_sec, frames[PIL]) yield."""
@@ -133,5 +149,82 @@ def iter_segments_from_boxes(video_path, video_name, boxes_table):
                 continue
             start_sec = rows[0][0] / fps
             yield segment_id, start_sec, frames
+    finally:
+        cap.release()
+
+def iter_segments_detected(video_path, segment_sec, frames_per_seg,
+                           detector, conf_threshold=0.25, imgsz=640,
+                           pad=0.10, min_size=32, fallback="prev"):
+    """
+    Evaluation/inference path: full-frame video -> detect(bird) -> crop.
+
+    Yields the same shape as iter_segments: (segment_id, start_sec, frames[PIL]).
+    fallback:
+      - "prev": reuse the previous valid box; if unavailable, use full-frame
+      - "full": use the current full-frame
+      - "skip": drop the frame
+    """
+    if fallback not in {"prev", "full", "skip"}:
+        raise ValueError("fallback must be one of: 'prev', 'full', 'skip'")
+
+    cap, fps, total_frames, duration_sec = load_video(video_path)
+    n_segments = int(duration_sec // segment_sec)
+    prev_box = None
+
+    try:
+        for segment_id in range(n_segments):
+            start_sec = segment_id * segment_sec
+            end_sec = start_sec + segment_sec
+            start_frame = int(start_sec * fps)
+            end_frame = int(end_sec * fps)
+            indices = np.linspace(start_frame, end_frame, int(frames_per_seg)).astype(int).tolist()
+
+            frames = []
+            for frame_idx in indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_pil = Image.fromarray(frame_rgb)
+                box = detect_bird_box(
+                    detector,
+                    frame_pil,
+                    conf_threshold=conf_threshold,
+                    imgsz=imgsz,
+                )
+
+                if box is not None:
+                    crop = _crop_frame_arr(frame, box, pad=pad, min_size=min_size)
+                    if crop is not None:
+                        crop.info["detect_source"] = "detected"
+                        frames.append(crop)
+                        prev_box = box
+                        continue
+
+                if fallback == "prev" and prev_box is not None:
+                    crop = _crop_frame_arr(frame, prev_box, pad=pad, min_size=min_size)
+                    if crop is not None:
+                        crop.info["detect_source"] = "fallback_prev"
+                        frames.append(crop)
+                        continue
+
+                if fallback == "full" or (fallback == "prev" and prev_box is None):
+                    frame_pil.info["detect_source"] = "fallback_full"
+                    frames.append(frame_pil)
+
+            if frames:
+                detected_count = sum(f.info.get("detect_source") == "detected" for f in frames)
+                prev_count = sum(f.info.get("detect_source") == "fallback_prev" for f in frames)
+                full_count = sum(f.info.get("detect_source") == "fallback_full" for f in frames)
+                if prev_count or full_count:
+                    print(
+                        f"[video_processor] segment {segment_id}: "
+                        f"detected={detected_count}, "
+                        f"fallback_prev={prev_count}, "
+                        f"fallback_full={full_count}"
+                    )
+                yield segment_id, start_sec, frames
     finally:
         cap.release()

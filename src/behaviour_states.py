@@ -1,6 +1,6 @@
 from enum import Enum
 
-DEFAULT_CONFIDENCE_THRESHOLD = 0.6
+DEFAULT_CONFIDENCE_THRESHOLD = 0.45
 class BehaviourClass(Enum):
     """
     Enum class for the behaviour state of target animal

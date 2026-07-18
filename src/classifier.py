@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import pandas as pd
 import joblib
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from sklearn.linear_model import LogisticRegression
@@ -158,7 +159,7 @@ def _extract_from_single_video_boxes(video_path, video_name, label_df, boxes_tab
     return X, y
 
 
-def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, frames_per_seg=10, include_std=False, boxes_csv=None):
+def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, frames_per_seg=10, include_std=False, boxes_csv=None, return_groups=False):
     """
     다중 영상 + 다중 labels.csv → CLIP 임베딩 → X, y 반환
 
@@ -188,11 +189,18 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, 
             data = np.load(cache_file, allow_pickle=True)
             X, y = data["X"], data["y"]
             print(f"[{datetime.now():%H:%M:%S}] [classifier] 캐시에서 X={X.shape}, y={y.shape} 로드 완료")
+            if return_groups:
+                if "groups" not in data:
+                    raise ValueError("캐시에 groups가 없습니다. return_groups=True이면 cache_path=None으로 다시 추출하세요.")
+                groups = data["groups"]
+                if len(groups) != len(X):
+                    raise RuntimeError(f"groups({len(groups)})와 X({len(X)}) 길이가 다릅니다.")
+                return X, y, groups
             return X, y
 
     # ── 영상별 추출 후 합치기 ──
     boxes_table = _read_segment_boxes(boxes_csv) if boxes_csv is not None else None
-    all_X, all_y = [], []
+    all_X, all_y, all_groups = [], [], []
 
     for vid_idx, (video_path, labels_csv) in enumerate(zip(video_paths, labels_csvs)):
         print(f"[{datetime.now():%H:%M:%S}] [classifier] ── 영상 {vid_idx + 1}/{len(video_paths)}: {video_path}")
@@ -215,14 +223,22 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, 
                 model_name,
                 include_std,
             )
+            if len(y) != len(label_df):
+                raise RuntimeError(
+                    f"crop 추출 수({len(y)})와 유효 라벨 수({len(label_df)})가 다릅니다: {labels_csv}"
+                )
         all_X.extend(X)
         all_y.extend(y)
+        all_groups.extend([Path(video_path).stem] * len(X))
 
     if not all_X:
         raise RuntimeError("모든 영상에서 임베딩 추출에 성공한 구간이 없습니다.")
 
     X = np.stack(all_X)  # (N, 512)
     y = np.array(all_y)  # (N,)
+    groups = np.array(all_groups)  # (N,)
+    if len(groups) != len(X):
+        raise RuntimeError(f"groups({len(groups)})와 X({len(X)}) 길이가 다릅니다.")
     class_counts = {c: int((y == c).sum()) for c in np.unique(y)}
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 학습셋 클래스별 최종 구간 수: {class_counts}")
 
@@ -232,9 +248,14 @@ def build_feature_matrix(video_paths, labels_csvs, model_name, cache_path=None, 
     # ── 캐시 저장 ──
     if cache_path is not None:
         Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
-        np.savez(cache_path, X=X, y=y)
+        if return_groups:
+            np.savez(cache_path, X=X, y=y, groups=groups)
+        else:
+            np.savez(cache_path, X=X, y=y)
         print(f"[{datetime.now():%H:%M:%S}] [classifier] 캐시 저장 완료: {cache_path}")
 
+    if return_groups:
+        return X, y, groups
     return X, y
 
 
@@ -295,23 +316,31 @@ def load_or_train_classifier(model_path, config):
 
     train_dir = Path(config.get("train_videos_dir", "data/train"))
     labels_dir = Path(config.get("train_labels_dir", str(train_dir)))
+    duck_labels_dir = Path(config.get("duck_labels_dir", "data/train/duck"))
 
-    # ── 라벨 파일을 학습셋의 기준으로 삼는다 (어댑터가 만든 duck subset만) ──
-    label_files = sorted(labels_dir.glob("labels_*.csv"))
-    if not label_files:
-        raise FileNotFoundError(
-            f"학습 라벨 CSV가 없습니다: {labels_dir} — 어댑터를 먼저 실행하세요."
-        )
+    sources = [
+        (labels_dir, train_dir),
+        (duck_labels_dir, duck_labels_dir),
+    ]
 
     video_paths, labels_csvs, missing_videos = [], [], []
-    for lc in label_files:
-        stem = lc.stem[len("labels_"):]          # labels_043-mallard → 043-mallard
-        vpath = train_dir / f"{stem}.mp4"
-        if vpath.exists():
-            video_paths.append(str(vpath))
-            labels_csvs.append(str(lc))
-        else:
-            missing_videos.append(str(vpath))
+    label_file_count = 0
+    for source_labels_dir, source_videos_dir in sources:
+        label_files = sorted(source_labels_dir.glob("labels_*.csv"))
+        label_file_count += len(label_files)
+        for lc in label_files:
+            stem = lc.stem[len("labels_"):]          # labels_043-mallard → 043-mallard
+            vpath = source_videos_dir / f"{stem}.mp4"
+            if vpath.exists():
+                video_paths.append(str(vpath))
+                labels_csvs.append(str(lc))
+            else:
+                missing_videos.append(str(vpath))
+
+    if label_file_count == 0:
+        raise FileNotFoundError(
+            f"학습 라벨 CSV가 없습니다: {labels_dir}, {duck_labels_dir} — 어댑터를 먼저 실행하세요."
+        )
 
     if missing_videos:
         print(f"[{datetime.now():%H:%M:%S}] [classifier] 경고: 라벨은 있으나 영상 없음 → 제외: {missing_videos}")
@@ -320,18 +349,56 @@ def load_or_train_classifier(model_path, config):
 
     print(f"[{datetime.now():%H:%M:%S}] [classifier] 학습 대상 영상 {len(video_paths)}개")
 
-    X, y = build_feature_matrix(
-        video_paths, labels_csvs,
-        config["clip_model"],
-        cache_path=None,          # crop feature → 캐시 미사용
-        frames_per_seg=config["frames_per_seg"],
-        boxes_csv=config.get("train_boxes_csv"),
-    )
+    boxes_csvs = [
+        config.get("train_boxes_csv"),
+        config.get("duck_boxes_csv"),
+    ]
+    boxes_csvs = [Path(p) for p in boxes_csvs if p]
+    if not boxes_csvs:
+        raise FileNotFoundError("학습 box CSV 경로가 없습니다.")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, newline="", encoding="utf-8") as f:
+        merged_boxes_csv = Path(f.name)
+    try:
+        pd.concat([pd.read_csv(p) for p in boxes_csvs], ignore_index=True).to_csv(merged_boxes_csv, index=False)
+        X, y, groups = build_feature_matrix(
+            video_paths, labels_csvs,
+            config["clip_model"],
+            cache_path=None,          # crop feature → 캐시 미사용
+            frames_per_seg=config["frames_per_seg"],
+            boxes_csv=str(merged_boxes_csv),
+            return_groups=True,
+        )
+        if len(groups) != len(X):
+            raise RuntimeError(f"groups({len(groups)})와 X({len(X)}) 길이가 다릅니다.")
+    finally:
+        merged_boxes_csv.unlink(missing_ok=True)
     return train_classifier(X, y, model_path)
 # ──────────────────────────────────────────────
 # 세그먼트 예측
 # ──────────────────────────────────────────────
-def predict_segment(frames, clf, le, confidence_threshold, clip_model):
+def predict_segment_proba(frames, clf, le, clip_model):
+    """
+    Frames -> embedding -> predict_proba.
+    Returns the raw class probability vector so callers can apply temporal
+    smoothing before thresholding.
+    """
+    if not frames:
+        print(f"[{datetime.now():%H:%M:%S}] [classifier] empty frames -> no proba")
+        return None
+
+    try:
+        embedding = frames_to_embedding(frames, model_name=clip_model)
+        proba = clf.predict_proba(embedding.reshape(1, -1))[0]
+        print(f"proba={dict(zip(le.classes_, proba.round(3)))}, max={proba.max():.3f}")
+        return proba
+
+    except Exception as e:
+        print(f"[{datetime.now():%H:%M:%S}] [classifier] predict_segment_proba error: {e}")
+        return None
+
+
+def predict_segment(frames, clf, le, confidence_threshold, clip_model, confidence_margin_threshold=0.15):
     """
     프레임 리스트 → 임베딩 → predict_proba → (BehaviourClass, confidence) 반환
     최대 확률 < confidence_threshold 이면 UNCERTAIN 반환
@@ -341,13 +408,15 @@ def predict_segment(frames, clf, le, confidence_threshold, clip_model):
         return BehaviourClass.UNCERTAIN, 0.0
 
     try:
-        embedding = frames_to_embedding(frames, model_name=clip_model)
-        proba = clf.predict_proba(embedding.reshape(1, -1))[0]   # (n_classes,)
+        proba = predict_segment_proba(frames, clf, le, clip_model)
+        if proba is None:
+            return BehaviourClass.UNCERTAIN, 0.0
         max_confidence = float(proba.max())
         predicted_idx  = int(proba.argmax())
+        sorted_proba = sorted(proba, reverse=True)
+        margin = float(sorted_proba[0] - sorted_proba[1]) if len(sorted_proba) > 1 else max_confidence
 
-        print(f"proba={dict(zip(le.classes_, proba.round(3)))}, max={proba.max():.3f}")
-        if max_confidence < confidence_threshold:
+        if max_confidence < confidence_threshold and margin < confidence_margin_threshold:
             return BehaviourClass.UNCERTAIN, max_confidence
 
         label_str = le.inverse_transform([predicted_idx])[0]
